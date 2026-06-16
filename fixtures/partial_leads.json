@@ -1,0 +1,37 @@
+[
+  {
+    "external_id": "grow-001",
+    "identity": {
+      "name": "Maria Lopez",
+      "phone": ["+14805552001"],
+      "email": ["maria@example.com"]
+    },
+    "consent": {
+      "origin": "inbound",
+      "channels_allowed": ["voice", "sms", "email"],
+      "ai_voice_consent": true,
+      "recording_consent": true
+    },
+    "intake_slots": {
+      "accident_date": {
+        "value": "2026-03-01",
+        "confidence": 0.6,
+        "source_event": "form.submitted"
+      }
+    }
+  },
+  {
+    "external_id": "grow-002",
+    "identity": {
+      "name": "David Chen",
+      "phone": ["+14805552002"],
+      "email": ["david@example.com"]
+    },
+    "consent": {
+      "origin": "outbound",
+      "channels_allowed": ["voice", "sms", "email"],
+      "ai_voice_consent": true
+    },
+    "intake_slots": {}
+  }
+]
