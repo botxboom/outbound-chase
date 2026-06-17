@@ -4,8 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import httpx
-
+from src.brain.llm import chat_completion
 from src.config import settings
 from src.models.enums import Channel, EngagementMode
 from src.models.intake import IntakeRecord
@@ -30,27 +29,18 @@ Fields (use null if unknown):
 """
 
     try:
-        async with httpx.AsyncClient(timeout=settings.strategy_llm_timeout_seconds) as client:
-            response = await client.post(
-                f"{settings.llm_base_url.rstrip('/')}/chat/completions",
-                headers={"Authorization": f"Bearer {settings.llm_api_key}"},
-                json={
-                    "model": settings.llm_model,
-                    "messages": [
-                        {"role": "system", "content": "Return valid JSON only, no markdown."},
-                        {"role": "user", "content": prompt},
-                    ],
-                    "temperature": 0,
-                    "max_tokens": 256,
-                },
-            )
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            # Strip markdown fences if present
-            content = content.strip()
-            if content.startswith("```"):
-                content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
-            data = json.loads(content)
+        response = await chat_completion(
+            messages=[
+                {"role": "system", "content": "Return valid JSON only, no markdown."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=256,
+            temperature=0,
+        )
+        content = (response.content or "").strip()
+        if content.startswith("```"):
+            content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
+        data = json.loads(content)
     except Exception:
         return patch
 

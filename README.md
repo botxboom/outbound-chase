@@ -9,7 +9,7 @@ Four layers:
 1. **Durable orchestrator** (Temporal) — plan-driven loop, compliance gates, timer-vs-inbound race
 2. **Adaptive strategy** — signal extraction + touch planner (rules + optional LLM); fixed cadence is fallback only
 3. **Conversation brain** (LLM) — channel-blind slot filling, message goals, UPL guardrails
-4. **Channel adapters** — voice (simulated/Vapi), SMS (Twilio/mock), email (Postmark/mock)
+4. **Channel adapters** — voice (simulated/Vapi), SMS (Twilio/mock), email (Resend/mock), eSign (DocuSeal/mock)
 
 State is event-sourced (CQRS): append-only `events` table + `IntakeRecord` projection.
 
@@ -117,6 +117,10 @@ curl -X POST http://localhost:8000/api/leads/{lead_id}/simulate/inbound \
 | `DEMO_AI_VOICE_CONSENT` | `true` | Bypass ai_voice_consent gate for demo |
 | `LLM_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible LLM |
 | `PUBLIC_BASE_URL` | `http://localhost:8000` | Vapi custom-LLM serverUrl |
+| `RESEND_API_KEY` | — | Resend email API key |
+| `DOCUSEAL_API_URL` | `http://localhost:3000` | Self-hosted DocuSeal base URL |
+| `DOCUSEAL_API_KEY` | — | DocuSeal X-Auth-Token |
+| `DOCUSEAL_TEMPLATE_ID_EN` | `0` | Retainer template ID (English) |
 | `CLIO_GROW_FIXTURE_PATH` | `fixtures/partial_leads.json` | Clio Grow stub fixture |
 | `STRATEGY_LLM_SIGNALS` | `true` | LLM signal extraction for ambiguous inbound |
 | `STRATEGY_LLM_TIMEOUT_SECONDS` | `5.0` | Timeout for strategy LLM calls |
@@ -125,7 +129,33 @@ curl -X POST http://localhost:8000/api/leads/{lead_id}/simulate/inbound \
 
 - **`DEMO_AI_VOICE_CONSENT=true`** — voice channel allowed without explicit consent (demo only)
 - **`VOICE_MODE=simulated`** — no PSTN; set `vapi` + credentials for live calls
-- **`USE_MOCK_CHANNELS=false`** — use real Twilio/Postmark/Clio/Dropbox Sign when API keys are set
+- **`USE_MOCK_CHANNELS=false`** — use real Twilio/Resend/DocuSeal/Clio when API keys are set
+
+## DocuSeal (self-hosted eSign)
+
+```bash
+docker compose up -d docuseal docuseal-postgres
+```
+
+1. Open **http://localhost:3000** — create admin account
+2. Create a retainer template → note **Template ID** (URL or template settings)
+3. Console → API → copy **API key** (requires DocuSeal Pro license for API on self-hosted)
+4. Console → Webhooks → add `http://localhost:8000/webhooks/esign` → event `submission.completed`
+5. Set in `.env`:
+
+```bash
+USE_MOCK_CHANNELS=false
+DOCUSEAL_API_URL=http://localhost:3000
+DOCUSEAL_API_KEY=your_api_key
+DOCUSEAL_TEMPLATE_ID_EN=1
+DOCUSEAL_SUBMITTER_ROLE=First Party
+```
+
+## Resend (email)
+
+1. Sign up at [resend.com](https://resend.com) — verify domain or use `onboarding@resend.dev` for testing
+2. Set `RESEND_API_KEY` and `EMAIL_FROM_EMAIL` in `.env`
+3. Set `USE_MOCK_CHANNELS=false` to send real email
 
 ## Clio Grow Stub
 

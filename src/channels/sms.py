@@ -38,7 +38,7 @@ class SMSAdapter(ChannelAdapter):
                 body=text,
                 from_=self.from_number,
                 to=to_number,
-                status_callback=f"{settings.llm_base_url}/webhooks/sms/status",
+                status_callback=f"{settings.public_base_url.rstrip('/')}/webhooks/sms/status",
             )
             return {"success": True, "message_id": message.sid, "error": None}
         except Exception as e:

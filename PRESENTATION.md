@@ -1,95 +1,193 @@
-# Outbound-Chase Agent — Solution Presentation
-
-**Project:** AI intake chase agent for Marigold Injury Law (personal injury)  
-**Author:** Gulshan Kumar  
-**Repo:** `outbound-chase`
+# Outbound-Chase Agent
 
 ---
 
-## Table of Contents
+## Summary
 
-1. [Executive Summary](#1-executive-summary)
-2. [Problem Statement](#2-problem-statement)
-3. [Design Philosophy](#3-design-philosophy)
-4. [Architecture Overview](#4-architecture-overview)
-5. [Data Model & CQRS](#5-data-model--cqrs)
-6. [Adaptive Strategy Layer](#6-adaptive-strategy-layer)
-7. [Conversation Brain](#7-conversation-brain)
-8. [Temporal Orchestrator](#8-temporal-orchestrator)
-9. [Channel Adapters](#9-channel-adapters)
-10. [Ingress Matrix (Channel-Agnostic)](#10-ingress-matrix-channel-agnostic)
-11. [API & Entry Points](#11-api--entry-points)
-12. [Six Caller Scenarios](#12-six-caller-scenarios)
-13. [Tech Stack & Tools Used](#13-tech-stack--tools-used)
-14. [Stubs — What & Why](#14-stubs--what--why)
-15. [How to Run (Demo Script)](#15-how-to-run-demo-script)
-16. [Testing](#16-testing)
-17. [How I Worked With AI](#17-how-i-worked-with-ai)
-18. [Gaps & Two-Week Roadmap](#18-gaps--two-week-roadmap)
-19. [Repository Map](#19-repository-map)
-20. [One-Slide Pitch](#20-one-slide-pitch)
+I built **Outbound-Chase** — a working slice of an AI intake chase system for a personal injury firm. It re-engages partial leads across SMS, voice, and email over up to 14 days, completes intake, sends a retainer for eSign, and writes back to Clio Manage. The goal was never a fixed script: I wanted something that behaves like a sharp human intake specialist — reads context, adapts channel and timing in the moment, and handles situations no playbook covers.
+
+**What I built.** A four-layer system: Temporal orchestrator (durable chase + compliance gates), adaptive strategy layer (signal extraction → plan next touch), LLM conversation brain (slot filling, UPL guardrails, Spanish), and swappable channel adapters (Twilio, Resend, DocuSeal, Vapi). Intake state is channel-agnostic — one `IntakeRecord` and one workflow whether the lead came from a missed call, web form, Clio Grow stub, or designed web-chat ingress. Six caller scenarios (responsive, ghosting, hostile, wrong number, legal advice, Spanish) run via CLI and tests. Live integrations are wired where sandbox access allowed; Clio Grow and PSTN from India are stubbed with documented workarounds.
+
+**How I built it.** I worked in phases with Cursor Agent: I owned problem framing, architecture, and verification; AI handled boilerplate and implementation drafts. Phase 1 — chose Temporal + CQRS + strategy/brain split. Phase 2 — core slice (lead → workflow → brain → mock channels). Phase 3 — refactored from cadence-first to plan-driven adaptive strategy after comparing early work to the brief’s bar. Phase 4 — swapped to Resend, DocuSeal, Anthropic, and live Clio Manage. Phase 5 — live E2E testing (ngrok, Twilio webhooks), caught and fixed routing bugs, LLM timeouts, and delivery failures. Phase 6 — demo acceleration (`DEMO_FAST_CADENCE`, `run_scenario.py all`) and this reasoning trail.
+
+**Design, architecture, and decision challenges I faced.**
+
+- **Script vs specialist.** The hardest design call was separating _what to do next_ (strategy) from _what to say_ (brain). I initially leaned cadence-first; I corrected that when it clearly failed the brief — cadence is now fallback for ghosting only.
+- **Auditability vs adaptiveness.** I rejected a pure LLM planner for channel selection; rules + optional LLM signal extraction keeps compliance decisions deterministic while still adapting to SMS-hot, hostile, and opt-out cues.
+- **Channel-agnostic intake.** I resisted building channel-specific flows. Ingress is a payload difference (`trigger`, `consent.origin`, slots) — same engine, different first plan.
+- **Under-specified integrations.** No Clio Grow API in timebox → fixture preserves ingress semantics. Developer in India, US PSTN → simulated voice harness shares the same brain endpoint as live Vapi. Twilio trial rejected long emoji SMS (error 30044) even when API returned 201 — I had to query delivery logs, not trust HTTP status alone.
+- **Live E2E vs demo speed.** 14-day waits are real in production; I added `DEMO_FAST_CADENCE` and a scenario CLI so I can run all six paths in minutes without waiting days.
+
+I position this as roughly **65–70% of the ideal product** with **sharp reasoning** — architecture and adaptive behaviors are solid; deep persona modeling, contact-window enforcement, and live Clio Grow ingest remain on my two-week roadmap below.
 
 ---
 
-## 1. Executive Summary
+### What works today
 
-This is a **working slice** of an outbound intake chase system for a personal injury law firm. It demonstrates:
+| Capability                                                                                       | Status                                     |
+| ------------------------------------------------------------------------------------------------ | ------------------------------------------ |
+| Channel-agnostic intake state (missed call, web form, Clio Grow stub, web chat ingress)          | ✅ Same engine, different first plan       |
+| Adaptive strategy (SMS-hot → stop calling, hostile → de-escalation, ghosting → cadence fallback) | ✅ Rules + optional LLM signals            |
+| Durable 14-day chase (Temporal, timer-vs-inbound race)                                           | ✅ With `DEMO_FAST_CADENCE` for testing    |
+| LLM brain (slots, UPL guardrails, Spanish, message goals)                                        | ✅ Anthropic native + OpenAI-compatible    |
+| Six caller scenarios                                                                             | ✅ CLI + pytest                            |
+| Live SMS via Twilio                                                                              | ✅ Wired; trial delivery limits discovered |
+| Live email via Resend                                                                            | ✅ Wired                                   |
+| eSign via DocuSeal (self-hosted)                                                                 | ✅ Wired + webhook                         |
+| Clio Manage write-back                                                                           | ✅ Real sandbox token verified             |
+| Clio Grow ingest                                                                                 | ⚠️ Fixture stub only                       |
 
-- **Channel-agnostic intake state** — same engine for missed calls, web forms, SMS replies, and (designed) web chat
-- **Adaptive strategy** — reads signals (SMS reply, "text me", hostile tone) and changes *what to do next*, not just what to say
-- **Durable orchestration** — 14-day ghosting cadence with timer-vs-inbound race via Temporal
-- **LLM conversation brain** — slot filling, UPL guardrails, sentiment handling, Spanish parity
-- **Six caller scenarios** — responsive, ghosting, hostile, wrong number, legal advice, Spanish-only
+## 2. Problem Statement & The Bar
 
-**Honest positioning:** Architecture and core adaptive behaviors are solid (~65–70% of the ideal product). It does not yet fully meet the "best human intake specialist" bar — strategy is **rules-first with optional LLM signal extraction**, not deep psychological modeling. That gap is documented with a clear roadmap.
+This is how I read the problem and the bar I held myself to.
 
----
-
-## 2. Problem Statement
-
-Law firms receive **partial leads** — someone started intake (web form, missed call, chat) but dropped off. A great human intake specialist:
+Law firms receive **partial leads** — someone started intake (web form, missed call, Clio Grow, chat) but dropped off. A great human intake specialist:
 
 - Reads who they're talking to
-- Adapts channel and timing in the moment ("they texted back — stop calling")
-- Handles situations no script anticipated (hostile, legal advice requests, wrong number, Spanish-only)
-- Chases persistently but compliantly over 14 days without giving up after one voicemail
+- Adapts channel and timing ("they texted back — stop calling")
+- Handles unscripted situations (hostile, legal advice, wrong number, Spanish-only)
+- Chases persistently but compliantly over 14 days
 
-The bar is **not a script**. It's a system that genuinely understands context and responds the way a thoughtful human would.
+**The bar is not a fixed path.** It's something that genuinely understands context and responds the way a thoughtful human would.
+
+### How I interpreted the brief
+
+| Brief requirement                  | My response                                                                      |
+| ---------------------------------- | -------------------------------------------------------------------------------- |
+| Adaptive, context-aware            | Strategy layer + signal extraction + message goals injected into brain           |
+| Channel-agnostic intake            | Single `IntakeRecord`; ingress only changes `trigger` / `consent.origin` / slots |
+| No web-chat UI                     | Designed ingress via `trigger: web_chat` + API; no UI built                      |
+| Clio sandbox                       | Manage API live; Grow stubbed with fixture + same `create_lead` path             |
+| Voice/SMS/email/eSign — your setup | Twilio, Resend, DocuSeal self-hosted, Vapi; stub where blocked                   |
+| Six scenarios                      | All runnable via `scripts/run_scenario.py` + tests                               |
+| Reasoning trail                    | This document                                                                    |
+| How I worked with AI               | Phased delegation; corrections and what I threw out                              |
+
+**Gaps in the brief treated as part of the task:** I did not ask whether to use Temporal vs cron, rules vs pure LLM planner, or Postmark vs Resend — I decided based on auditability and sandbox access.
 
 ---
 
 ## 3. Design Philosophy
 
-### Why this decomposition?
+I split the system into four layers on purpose — each layer maps to a decision a human intake specialist makes vs. a system constraint I need to enforce in software.
 
-| Layer | Responsibility | Why separate? |
-|-------|----------------|---------------|
-| **Orchestrator** (Temporal) | When to act, durability, compliance gates, wait for inbound | Legal chase spans days; must survive restarts |
-| **Strategy** | Who this person is, next channel/timing/goal | Humans adapt the *plan*, not just the script |
-| **Brain** (LLM) | What to say on this turn | Language is hard; policy is auditable elsewhere |
-| **Channels** | How to send (voice/SMS/email) | Swap Vapi/Twilio/mock without touching logic |
+### Why I chose this decomposition
 
-### Core invariants
+| Layer                       | Responsibility                                              | Why separate?                                   |
+| --------------------------- | ----------------------------------------------------------- | ----------------------------------------------- |
+| **Orchestrator** (Temporal) | When to act, durability, compliance gates, wait for inbound | Legal chase spans days; must survive restarts   |
+| **Strategy**                | Who this person is, next channel/timing/goal                | Humans adapt the _plan_, not just the script    |
+| **Brain** (LLM)             | What to say on this turn                                    | Language is hard; policy is auditable elsewhere |
+| **Channels**                | How to send (voice/SMS/email/eSign)                         | Swap providers without touching logic           |
 
-1. **Planner proposes, gates dispose** — compliance (opt-out, quiet hours, attempt caps) always vetoes the plan
-2. **Event log is source of truth** — CQRS projection rebuilds `IntakeRecord` from append-only events
-3. **Channel-blind brain** — LLM emits intent + content; adapters handle delivery
-4. **Cadence is fallback, not driver** — fixed 9-step schedule only when no engagement signals exist
+### Core invariants I enforce
+
+1. **Planner proposes, gates dispose** — I never let the LLM override compliance (opt-out, quiet hours, attempt caps)
+2. **Event log is source of truth** — I rebuild `IntakeRecord` from append-only events (CQRS)
+3. **Channel-blind brain** — the LLM emits intent + content; my adapters handle delivery
+4. **Cadence is fallback, not driver** — I only use the fixed 9-step schedule when no engagement signals exist
 
 ### What I deliberately did NOT build
 
 - Web chat UI (brief said not to — only ingress design)
 - LLM-driven compliance decisions (too risky for legal)
 - Pure LLM planner for channel selection (not auditable)
+- Real Clio Grow API poll (no stable public read API in timebox; fixture preserves ingress semantics)
 
 ---
 
-## 4. Architecture Overview
+## 4. Phased Approach: Planning → Execution
+
+I split the work into phases and used Cursor Agent differently in each — **planning and judgment stayed with me; execution was delegated**.
+
+### Phase 1 — Assessment & architecture (my call)
+
+**My goal:** Frame the problem against the bar; choose decomposition before coding.
+
+| Decision                     | Why                                                                     |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| Temporal over cron/sleep     | Multi-day chase, inbound interrupts timer, must survive restarts        |
+| CQRS event log               | Compliance audit, cross-channel history, rebuild projection             |
+| Strategy separate from brain | "Stop calling after SMS reply" is a _plan_ change, not a wording change |
+| Cadence as fallback only     | Ghosting needs a schedule; engaged leads should not follow fixed script |
+
+**Cursor's role:** Drafted initial README/architecture diagrams; I rejected cadence-as-primary-driver before implementation completed.
+
+### Phase 2 — Core slice (delegated implementation)
+
+**My goal:** Working path: create lead → workflow → brain → mock channels → disposition.
+
+**What I built:** Postgres + Temporal + FastAPI + `IntakeRecord` + projection + basic workflow loop + mock adapters + scenario tests.
+
+**Cursor's role:** Boilerplate (SQLAlchemy models, activity stubs, pytest fixtures). **I verified:** disposition transitions, event reducer correctness.
+
+### Phase 3 — Adaptive strategy layer (hybrid: spec + implementation)
+
+**My goal:** Close the gap between "fixed cadence" and "human specialist."
+
+**What triggered this:** The assessment bar explicitly rejects scripts. My initial build was cadence-first — I identified that as the main architectural miss and directed a refactor.
+
+**What I built:**
+
+- `strategy.py` — `extract_signals_rules`, `plan_next_touch`, `plan_initial_touch`, cadence fallback
+- `signal_extractor.py` — hybrid LLM for ambiguous inbound (5s timeout, rules win on compliance)
+- Extended `EngagementState` — responsiveness, do_not_call, engagement_mode, last_plan
+- Refactored `workflow.py` — plan-driven loop with gate retry and inbound re-plan
+- Brain — `message_goal`, `plan_reason`, `constraints` in prompts
+
+**Cursor's role:** Implemented per my spec. **I verified:** SMS-hot → no voice (unit tests), ghosting still hits cadence fallback, ingress matrix plans.
+
+### Phase 4 — Integration swaps & production wiring
+
+**My goal:** Replace stubs with real providers where I had sandbox access; document the rest honestly.
+
+| Swap  | From               | To                                       | Reason (§10)                                             |
+| ----- | ------------------ | ---------------------------------------- | -------------------------------------------------------- |
+| Email | Postmark           | **Resend**                               | Simpler API, strong free tier, faster signup             |
+| eSign | Dropbox Sign       | **DocuSeal** (self-hosted)               | Docker-local dev, no per-envelope SaaS lock-in for demo  |
+| LLM   | Remote Ollama only | **Anthropic native** + OpenAI-compatible | Reliable API key; remote Ollama unreachable in live test |
+| Clio  | Mock write         | **Clio Manage** sandbox token            | Free dev account; real contact/matter write-back         |
+
+**What I also wired:** Twilio SMS (live), Vapi voice adapter, ngrok for webhooks, DocuSeal in docker-compose.
+
+**Cursor's role:** Adapter rewrites, config, webhook handlers. **I verified:** Clio `who_am_i`, Twilio message logs, health endpoints.
+
+### Phase 5 — Live E2E testing & bug fixes (my verification heavy)
+
+**My goal:** Run the real flow end-to-end — not mocks.
+
+**What I discovered and fixed:**
+
+| Issue                        | Symptom                              | Fix                                              |
+| ---------------------------- | ------------------------------------ | ------------------------------------------------ |
+| Vapi sub-app mounted at `/`  | `/api/leads` returned 404            | Register `/v1/chat/completions` on main app only |
+| LLM unreachable (Ollama URL) | Temporal activity `ConnectTimeout`   | Switched to `LLM_PROVIDER=anthropic`             |
+| `USE_MOCK_CHANNELS=true`     | No real SMS despite "all integrated" | Flipped to false; documented restart requirement |
+| Twilio trial error **30044** | API 201 but SMS never arrives        | Message too long + emojis; trial = 1 segment max |
+| `clio_grow --poll`           | Creates DB row, no workflow          | Use `POST /api/leads` for full E2E (documented)  |
+| Duplicate `lead_id`          | IntegrityError on retry              | New lead_id or delete row                        |
+| SMS status_callback          | Wrong URL (`llm_base_url`)           | Fixed to `public_base_url`                       |
+
+**What I added:** `DEMO_FAST_CADENCE` — cap waits to 10s, ghosting timeout 15 min so I can test live without waiting days.
+
+### Phase 6 — Demo acceleration & documentation
+
+**My goal:** Runnable submission artifacts.
+
+- `scripts/run_scenario.py all --channel sms` — all six scenarios back-to-back
+- This presentation — my full reasoning trail
+- My live runbook: ngrok, Twilio webhook, verified numbers, DocuSeal template ID
+
+---
+
+## 5. Architecture Overview
+
+This is the architecture I landed on after Phase 1 — one workflow per lead, plan-driven, channel-agnostic.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        LEAD INGRESS                              │
-│  POST /api/leads │ Clio Grow fixture │ simulate/inbound │ Vapi  │
+│  POST /api/leads │ Clio Grow fixture │ webhooks (SMS/email/esign)│
 └────────────────────────────┬────────────────────────────────────┘
                              │
                              ▼
@@ -102,97 +200,92 @@ The bar is **not a script**. It's a system that genuinely understands context an
         ▼                                         ▼
 ┌───────────────────┐                   ┌─────────────────────────┐
 │  STRATEGY LAYER   │                   │   CONVERSATION BRAIN    │
-│  extract_signals  │                   │   LLM + tools + UPL     │
-│  plan_next_touch  │── message_goal ──▶│   channel-blind         │
+│  extract_signals  │                   │   Anthropic / Ollama    │
+│  plan_next_touch  │── message_goal ──▶│   tools + UPL filter    │
 │  cadence fallback │                   └───────────┬─────────────┘
 └─────────┬─────────┘                               │
           │                                         ▼
           │                               ┌─────────────────────────┐
           │                               │   CHANNEL ADAPTERS      │
-          └──────────────────────────────▶│ voice / sms / email     │
-                                            └─────────────────────────┘
+          └──────────────────────────────▶│ Twilio / Resend / Vapi  │
+                                          │ DocuSeal / mock         │
+                                          └─────────────────────────┘
                              │
                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                     CQRS STATE (PostgreSQL)                      │
 │   events (append-only) ──▶ leads projection (IntakeRecord)      │
-└─────────────────────────────────────────────────────────────────┘
+└────────────────────────────┬────────────────────────────────────┘
+                             ▼
+                    Clio Manage write-back (terminal milestones)
 ```
 
-### Request flow (single outbound touch)
+### Request flow (how I wired a single outbound touch)
 
-1. Workflow calls `plan_next_touch(lead_id)`
-2. Strategy reads engagement model → returns channel, message_goal, wait_seconds, reason
-3. `check_compliance_gates` vetoes if opt-out / quiet hours / caps
-4. `execute_outbound_touch` → brain generates content → adapter sends
-5. `extract_signals` updates person model from interaction
-6. Workflow sleeps or races against inbound signal
-7. On inbound → `process_inbound` → brain reply → re-plan from scratch
+1. My workflow calls `plan_next_touch(lead_id)`
+2. My strategy layer reads the engagement model → channel, message_goal, wait_seconds, reason
+3. My compliance gates veto if opt-out / quiet hours / caps
+4. `execute_outbound_touch` → brain generates content → my adapter sends
+5. `extract_signals` updates the person model
+6. The workflow sleeps or races against an inbound signal
+7. On inbound → `process_inbound` → brain reply → I re-plan from scratch
 
 ---
 
-## 5. Data Model & CQRS
+## 6. Data Model & CQRS (Channel-Agnostic)
 
-### IntakeRecord (channel-agnostic)
+I designed intake state so it **does not assume the lead came from a phone call.** The same `IntakeRecord` backs missed calls, web forms, Clio Grow partials, and (designed) web chat.
 
-Single projection used by orchestrator, strategy, and brain:
+### IntakeRecord
 
-| Area | Key fields |
-|------|------------|
-| **Identity** | name, phone[], email[] |
-| **Consent** | origin (inbound/outbound), channels_allowed, ai_voice_consent, opt_out |
-| **Intake slots** | accident_date, location, type, injuries, treatment, insurance, prior_attorney |
-| **Engagement** | sentiment, attempts_by_channel, channel_preference, responsiveness, do_not_call, engagement_mode, contact_window, last_plan, cadence_step_index, trigger |
-| **Disposition** | NEW → CHASING → ENGAGED → INTAKE_COMPLETE → RETAINER_SENT → SIGNED |
-| **Terminal** | OPTED_OUT, HANDOFF, GAVE_UP, WRONG_NUMBER |
-| **Retainer** | envelope_id, status, signed_pdf_ref |
+| Area             | Key fields                                                                                                                                                   |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Identity**     | name, phone[], email[]                                                                                                                                       |
+| **Consent**      | origin (inbound/outbound), channels_allowed, ai_voice_consent, opt_out                                                                                       |
+| **Intake slots** | accident_date, location, type, injuries, treatment, insurance, prior_attorney                                                                                |
+| **Engagement**   | sentiment, attempts_by_channel, channel_preference, responsiveness, do_not_call, engagement_mode, contact_window, last_plan, cadence_step_index, **trigger** |
+| **Disposition**  | NEW → CHASING → ENGAGED → INTAKE_COMPLETE → RETAINER_SENT → SIGNED                                                                                           |
+| **Terminal**     | OPTED_OUT, HANDOFF, GAVE_UP, WRONG_NUMBER                                                                                                                    |
+| **Retainer**     | envelope_id, status, signed_pdf_ref                                                                                                                          |
 
 ### Event-sourced projection
 
-- **`events` table** — append-only log
-- **`leads` table** — materialized projection for fast reads
-- **`apply_event()`** in `src/store/projection.py` — reducer pattern
+- **`events`** — append-only log
+- **`leads`** — materialized projection
+- **`apply_event()`** — reducer in `src/store/projection.py`
 
-**Key event types:**
-
-- Lifecycle: `lead.created`, `form.submitted`
-- Channels: `sms.inbound`, `sms.outbound`, `call.attempted`, `call.voicemail_left`, `email.sent`
-- Intake: `slot.captured`, `slot.confirmed`
-- Strategy: `strategy.signal_observed`, `strategy.planned`
-- Terminal: `consent.revoked`, `escalated`, `gave_up`, `retainer.signed`
-
-**Why CQRS?** Audit trail for compliance, cross-channel conversation history, ability to rebuild state.
+**Why I chose CQRS:** I needed a compliance audit trail, cross-channel conversation history, and the ability to rebuild state after bugs.
 
 ---
 
-## 6. Adaptive Strategy Layer
+## 7. Adaptive Strategy Layer
 
-**Files:** `src/orchestrator/strategy.py`, `src/orchestrator/signal_extractor.py`
+This is the layer I added in Phase 3 to meet the "human specialist, not script" bar.
 
-### Closed loop
+**Files I wrote:** `src/orchestrator/strategy.py`, `src/orchestrator/signal_extractor.py`
+
+### Closed loop (my "human specialist" mechanism)
 
 ```
 observe → extract signals → update person model → plan next touch → brain executes → repeat
 ```
 
+This is how **my system changes strategy mid-chase** — not just the next sentence.
+
 ### Signal extraction
 
 **Rules (always on):**
 
-| Signal | Effect |
-|--------|--------|
-| SMS inbound | `responsiveness[sms]=hot`, prefer SMS |
-| Reply within 5 min | `hot` on that channel |
-| "Text me" / "stop calling" | `do_not_call=true`, SMS only |
-| Hostile keywords | `engagement_mode=hostile_open`, de-escalation path |
-| 3+ outbound, no inbound | `engagement_mode=ghosting` → cadence fallback |
-| "Call after 5" / "evening" | `contact_window` set |
+| Signal                     | Effect                                             |
+| -------------------------- | -------------------------------------------------- |
+| SMS inbound                | `responsiveness[sms]=hot`, prefer SMS              |
+| Reply within 5 min         | `hot` on that channel                              |
+| "Text me" / "stop calling" | `do_not_call=true`, SMS only                       |
+| Hostile keywords           | `engagement_mode=hostile_open`, de-escalation path |
+| 3+ outbound, no inbound    | `engagement_mode=ghosting` → cadence fallback      |
+| "Call after 5" / "evening" | `contact_window` set (extracted, not yet enforced) |
 
-**Optional LLM** (`STRATEGY_LLM_SIGNALS=true`, 5s timeout):
-
-- Runs for inbound messages > 20 chars
-- Returns JSON: channel_preference, do_not_call, contact_window, objections
-- **Rules win** on compliance-critical fields (opt-out, do_not_call)
+**Optional LLM** (`STRATEGY_LLM_SIGNALS=true`, 5s timeout): ambiguous inbound > 20 chars → JSON patch; **rules win** on opt-out / do_not_call.
 
 ### Planner rule priority
 
@@ -203,57 +296,45 @@ observe → extract signals → update person model → plan next touch → brai
 5. Engaged + partial slots → gap_fill on best channel
 6. **Fallback:** 9-step cadence curve
 
-Every plan emits `strategy.planned` event with auditable `reason` string (e.g. `adaptive:sms_hot_responsive`, `cadence_fallback:step_1_call_attempt`).
+Every plan emits `strategy.planned` with auditable `reason` (e.g. `adaptive:sms_hot_responsive`).
 
 ### Message goals (passed to brain)
 
-| Goal | When used |
-|------|-----------|
-| `instant_reply` | Missed call / inbound origin |
-| `warm_intro` | Empty web form |
-| `confirm_slots` | Partial web form |
-| `gap_fill` | Engaged, missing slots |
-| `empathy_check_in` | Hostile but not opted out |
-| `soft_reengage` | Clio Grow stale lead |
-| `call_attempt` | Cadence fallback voice |
-| `loss_aversion` | Day 7 ghosting |
-| `send_retainer` | Intake complete |
-| `give_up` | 14-day timeout |
+| Goal               | When used                    |
+| ------------------ | ---------------------------- |
+| `instant_reply`    | Missed call / inbound origin |
+| `warm_intro`       | Empty web form               |
+| `confirm_slots`    | Partial web form             |
+| `gap_fill`         | Engaged, missing slots       |
+| `empathy_check_in` | Hostile but not opted out    |
+| `soft_reengage`    | Clio Grow stale lead         |
+| `call_attempt`     | Cadence fallback voice       |
+| `loss_aversion`    | Day 7 ghosting               |
+| `send_retainer`    | Intake complete              |
+| `give_up`          | 14-day timeout               |
 
 ---
 
-## 7. Conversation Brain
+## 8. Conversation Brain & LLM
 
-**File:** `src/brain/agent.py`
+**Files I wrote:** `src/brain/agent.py`, `src/brain/llm.py`, `src/brain/upl_filter.py`
 
-### Role
+### Brain role (how I configured it)
 
-Automated assistant for Marigold Injury Law. **Not a lawyer.** Collects intake slots, adapts tone, never gives legal advice.
+I configured the brain as an automated assistant for Marigold Injury Law. **It is not a lawyer.** It collects intake slots, adapts tone, and never gives legal advice.
 
-### LLM tools (function calling)
+### Tools (function calling)
 
-| Tool | Purpose |
-|------|---------|
-| `update_slot` | Capture intake field with confidence |
-| `derive_sol_date` | AZ SOL flag for attorney only — never spoken |
-| `send_intake_link` | Online intake form link |
-| `send_retainer` | eSign representation agreement |
-| `check_retainer_status` | Poll signing status |
-| `escalate_to_human` | Transfer to live person |
-| `mark_wrong_number` | Suppress contact |
-| `set_opt_out` | Stop all contact |
-| `set_language` | Set preferred language |
+`update_slot`, `derive_sol_date`, `send_intake_link`, `send_retainer`, `check_retainer_status`, `escalate_to_human`, `mark_wrong_number`, `set_opt_out`, `set_language`
 
-### Guardrails
+### Guardrails I put in place
 
-1. **Prompt-level UPL rules** — no case value, no merit opinions, redirect legal questions
-2. **Deterministic UPL filter** (`src/brain/upl_filter.py`) — regex backstop on outbound text
-3. **Sentiment detection** — keyword-based hostile/distressed signals
-4. **Opener disclosure** — automated assistant, not attorney, calls recorded
+1. Prompt-level UPL rules
+2. Deterministic UPL filter (`upl_filter.py`) — my regex backstop
+3. Sentiment detection — keyword hostile/distressed
+4. Opener disclosure — automated assistant, not attorney, calls recorded
 
-### Strategy → brain injection
-
-When executing a planned touch, brain receives:
+### How I inject strategy into the brain
 
 ```
 Strategy for this touch: gap_fill
@@ -264,7 +345,9 @@ Do not re-ask fields already in Collected info unless confirming.
 
 ---
 
-## 8. Temporal Orchestrator
+## 9. Temporal Orchestrator
+
+I use Temporal because a PI chase spans days and must survive restarts — cron would not handle inbound interrupts cleanly.
 
 **Files:** `src/orchestrator/workflow.py`, `src/orchestrator/activities.py`, `src/worker.py`
 
@@ -274,435 +357,292 @@ Do not re-ask fields already in Collected info unless confirming.
 
 ### Signals
 
-| Signal | Effect |
-|--------|--------|
-| `inbound_event` | SMS/email/voice reply arrives — interrupts timer |
-| `stop_chase` | External stop |
-| `opt_out` | Immediate opt-out |
+| Signal          | Effect                                       |
+| --------------- | -------------------------------------------- |
+| `inbound_event` | SMS/email/voice reply — **interrupts timer** |
+| `stop_chase`    | External stop                                |
+| `opt_out`       | Immediate opt-out                            |
 
 ### Compliance gates (hard veto)
 
-| Gate | Behavior |
-|------|----------|
-| Opt-out | Terminal OPTED_OUT |
-| Quiet hours | 8 AM – 9 PM Phoenix — wait/re-plan |
-| Voice cap | Max 3 voice attempts |
-| SMS cap | Max 5 SMS attempts |
-| Email cap | Max 3 email attempts |
-| Total cap | Max 10 attempts across channels |
-| Chase timeout | 14 days → GAVE_UP |
-| AI voice consent | Required unless `DEMO_AI_VOICE_CONSENT=true` |
+| Gate                     | Behavior                                          |
+| ------------------------ | ------------------------------------------------- |
+| Opt-out                  | Terminal OPTED_OUT                                |
+| Quiet hours              | 8 AM – 9 PM Phoenix                               |
+| Voice / SMS / email caps | 3 / 5 / 3 per channel                             |
+| Total cap                | 10 attempts                                       |
+| Chase timeout            | 14 days → GAVE_UP (15 min in `DEMO_FAST_CADENCE`) |
+| AI voice consent         | Required unless `DEMO_AI_VOICE_CONSENT=true`      |
 
-### Cadence fallback table
+### Demo fast cadence (how I test without waiting days)
 
-Used when no strong engagement signals (ghosting):
+```bash
+DEMO_FAST_CADENCE=true
+DEMO_WAIT_SECONDS_CAP=10      # max seconds between touches
+DEMO_CHASE_TIMEOUT_MINUTES=15 # ghosting give-up window
+```
 
-| Step | Channel | Goal | Backoff |
-|------|---------|------|---------|
-| 0 | SMS | instant_reply | 0 |
-| 1 | Voice | call_attempt | 5 min |
-| 2 | SMS | follow_up | 1 hr |
-| 3 | Voice | call_attempt (alt hour) | 1 day |
-| 4 | Email | intake_link | 2 days |
-| 5 | Voice | call_attempt | 4 days |
-| 6 | SMS | loss_aversion | 7 days |
-| 7 | Email | final | 10 days |
-| 8 | — | give_up | 14 days |
+In production I keep the full cadence when `DEMO_FAST_CADENCE=false`.
 
-**Voice AMD=machine** → unique voicemail + paired SMS (attempt-aware wording).
+### Cadence fallback (ghosting)
 
----
+| Step | Channel | Goal                    | Backoff (prod) |
+| ---- | ------- | ----------------------- | -------------- |
+| 0    | SMS     | instant_reply           | 0              |
+| 1    | Voice   | call_attempt            | 5 min          |
+| 2    | SMS     | follow_up               | 1 hr           |
+| 3    | Voice   | call_attempt (alt hour) | 1 day          |
+| 4    | Email   | intake_link             | 2 days         |
+| 5    | Voice   | call_attempt            | 4 days         |
+| 6    | SMS     | loss_aversion           | 7 days         |
+| 7    | Email   | final                   | 10 days        |
+| 8    | —       | give_up                 | 14 days        |
 
-## 9. Channel Adapters
-
-**Pattern:** `src/channels/base.py` → mock / real implementations selected by config.
-
-| Channel | Mock (default) | Production | Config |
-|---------|----------------|------------|--------|
-| Voice | `SimulatedVoiceAdapter` | Vapi PSTN | `VOICE_MODE=simulated\|vapi` |
-| SMS | `MockSMSAdapter` | Twilio | `USE_MOCK_CHANNELS=false` + Twilio keys |
-| Email | `MockEmailAdapter` | Postmark | Postmark token |
-| eSign | Mock envelope IDs | Dropbox Sign | `DROPBOX_SIGN_API_KEY` |
-| Clio | Audit log only | Clio Manage API | `CLIO_ACCESS_TOKEN` |
-
-Mock adapters write to `audit_trail` table for demo visibility.
+**Voice AMD=machine** → unique voicemail + paired SMS.
 
 ---
 
-## 10. Ingress Matrix (Channel-Agnostic)
+## 10. Integrations
 
-Same engine, same workflow, same brain — different first plan based on ingress:
+These are the providers I chose, why I chose them, and what actually worked in my live tests.
 
-| Source | API payload | First plan | Notes |
-|--------|-------------|------------|-------|
-| **Missed call** | `consent.origin: "inbound"` | SMS `instant_reply` | Acknowledge missed call |
-| **Web form (partial)** | `trigger: "web_form"` + `intake_slots` | SMS `confirm_slots` | Confirm known, ask one gap |
-| **Web form (empty)** | `trigger: "web_form"` | SMS `warm_intro` | Standard opener |
-| **Clio Grow** | `trigger: "clio_grow_stub"` via fixture poll | SMS `soft_reengage` | 24h wait before voice |
-| **Web chat** | `trigger: "web_chat"` + optional conversation seed | SMS `gap_fill` | No UI built; same API |
+### Summary table
 
-**Example — missed call:**
+| Integration          | My choice                  | Why I chose this over alternatives                                                 | My status                    |
+| -------------------- | -------------------------- | ---------------------------------------------------------------------------------- | ---------------------------- |
+| **Orchestration**    | Temporal                   | Durable multi-day chase, signal/timer race                                         | ✅ Live                      |
+| **Database**         | PostgreSQL + CQRS          | Audit + rebuild                                                                    | ✅ Live (port 5434)          |
+| **LLM**              | Anthropic                  | Reliable API key; tool calling; my remote Ollama timed out in live E2E             | ✅ Live                      |
+| **SMS**              | Twilio                     | Industry standard; brief allows own setup                                          | ✅ Live (trial limits)       |
+| **Email**            | **Resend**                 | Replaced Postmark — simpler REST API, fast signup, `onboarding@resend.dev` for dev | ✅ Live                      |
+| **eSign**            | **DocuSeal** (self-hosted) | Replaced Dropbox Sign — Docker local, open/self-host, webhook API                  | ✅ Live (template + Pro API) |
+| **Voice**            | Vapi + custom LLM URL      | Brief PSTN path; brain served from same FastAPI app                                | ✅ Wired; India dev uses sim |
+| **Clio Manage**      | Clio API v4                | Brief sandbox; write contact/matter/note on terminal                               | ✅ Token verified            |
+| **Clio Grow**        | Fixture JSON               | No Grow read API integrated in timebox                                             | ⚠️ Stub                      |
+| **Inbound webhooks** | ngrok                      | localhost not reachable by Twilio/DocuSeal                                         | ✅ Used in live test         |
+| **Tunnel**           | ngrok                      | Required for `/webhooks/sms`, `/webhooks/esign`, Vapi LLM URL                      | ✅                           |
+
+### Resend (email) — why I switched
+
+**What I tried first:** Postmark in my initial scaffold.  
+**What blocked me:** Extra vendor setup; stale env vars caused validation errors after the swap.
+
+**Why I chose Resend:**
+
+- Single REST API, good DX
+- Free tier sufficient for demo
+- `onboarding@resend.dev` works without domain verification for first sends
+- Tags support `lead_id` for future inbound correlation
+
+### DocuSeal (eSign) — why I switched
+
+**What I tried first:** Dropbox Sign adapter.  
+**Why I chose DocuSeal:**
+
+- Self-hosted via `docker compose up docuseal` — full local loop without SaaS billing
+- Open submission API + `submission.completed` webhook maps cleanly to `retainer_signed` event
+
+### Anthropic (LLM) — why I added a native provider
+
+**What I tried first:** Remote Ollama at `LLM_BASE_URL` with a Claude model name (invalid combo).  
+**What I saw:** Temporal workflow failed with `APITimeoutError` / `ConnectTimeout`.  
+**What I did:** Added `src/brain/llm.py` with `LLM_PROVIDER=anthropic` — uses my `sk-ant-...` key directly, no endpoint. I kept the OpenAI-compatible path for Ollama/local.
+
+### Clio Manage — why I wired it live; Grow — why I stubbed
+
+**Clio Manage:** I signed up for a free developer account; my OAuth/token → `who_am_i` verified. Write-back on SIGNED/GAVE_UP/etc. is the firm-facing payoff I wanted to prove.  
+**Clio Grow:** Ingress semantics matter to me (`trigger: clio_grow_stub` → soft_reengage plan). I used fixture `partial_leads.json` + a poll script to preserve that without Grow API scope negotiation in the timebox. **Next for me:** Zapier/webhook or Grow API → same `POST /api/leads`.
+
+### Twilio — what I learned in live testing
+
+My flow **was working** (LLM → Twilio API 201) but messages **failed delivery** with error **30044** (Trial Message Length Exceeded): my LLM output + emoji + the trial prefix exceeded the 1-segment trial limit. **My workarounds:** upgrade Twilio, shorten SMS, strip emojis, or use a US verified number.
+
+---
+
+## 11. Channel Adapters
+
+I use a single adapter interface so I can swap providers without touching orchestration or strategy.
+
+**Pattern:** `src/channels/base.py` → mock / real via config.
+
+| Channel | Mock                    | Production      | Config                       |
+| ------- | ----------------------- | --------------- | ---------------------------- |
+| Voice   | `SimulatedVoiceAdapter` | Vapi PSTN       | `VOICE_MODE=simulated\|vapi` |
+| SMS     | `MockSMSAdapter`        | Twilio          | `USE_MOCK_CHANNELS=false`    |
+| Email   | `MockEmailAdapter`      | **Resend**      | `RESEND_API_KEY`             |
+| eSign   | Mock envelope           | **DocuSeal**    | `DOCUSEAL_*`                 |
+| Clio    | Audit-only if no token  | Clio Manage API | `CLIO_ACCESS_TOKEN`          |
+
+I set `USE_MOCK_CHANNELS=false` when I want all real adapters (keys required).
+
+---
+
+## 12. Ingress Matrix (No Rework Per Source)
+
+I deliberately built one engine, one workflow, one brain — only the **first plan** changes by ingress:
+
+| Source                 | API payload                               | First plan          | Notes                       |
+| ---------------------- | ----------------------------------------- | ------------------- | --------------------------- |
+| **Missed call**        | `consent.origin: "inbound"`               | SMS `instant_reply` | Acknowledge missed call     |
+| **Web form (partial)** | `trigger: "web_form"` + slots             | SMS `confirm_slots` | Confirm known, ask one gap  |
+| **Web form (empty)**   | `trigger: "web_form"`                     | SMS `warm_intro`    | Standard opener             |
+| **Clio Grow**          | `trigger: "clio_grow_stub"`               | SMS `soft_reengage` | 24h wait (10s in demo-fast) |
+| **Web chat**           | `trigger: "web_chat"` + conversation seed | SMS `gap_fill`      | No UI; same API             |
+
+**My example — Clio Grow style live test:**
 
 ```json
 POST /api/leads
 {
-  "identity": {"name": "David", "phone": ["+14805551234"], "email": ["david@example.com"]},
-  "consent": {"origin": "inbound", "channels_allowed": ["voice","sms","email"], "ai_voice_consent": true}
+  "lead_id": "live-test-003",
+  "trigger": "clio_grow_stub",
+  "identity": {"name": "Gulshan", "phone": ["+1..."], "email": ["..."]},
+  "consent": {"origin": "outbound", "channels_allowed": ["voice","sms","email"], "ai_voice_consent": true},
+  "intake_slots": {"accident_date": {"value": "2026-03-01", "confidence": 0.6}}
 }
 ```
 
-**Example — partial web form:**
+I did not fork code per channel — only the ingress payload differs.
 
-```json
-POST /api/leads
-{
-  "trigger": "web_form",
-  "identity": {"name": "Maria", "phone": ["+14805559999"]},
-  "intake_slots": {
-    "accident_date": {"value": "2026-03-01", "confidence": 0.7}
-  }
-}
-```
+## 14. Six Caller Scenarios
 
-No rework per channel — only ingress payload differs.
+These are the six paths I committed to demo and test:
+| Scenario | What I set out to prove | Command |
+| ---------------- | -------------------------------------------------- | -------------------------------------------------------------- |
+| **Responsive** | SMS happy path, slot capture, adaptive SMS plan | `python3 scripts/run_scenario.py responsive --channel sms` |
+| **Ghosting** | Cadence fallback, voicemail + paired SMS, `[PLAN]` | `python3 scripts/run_scenario.py ghosting` |
+| **Hostile** | De-escalation, opt-out | `python3 scripts/run_scenario.py hostile --channel voice` |
+| **Wrong number** | Immediate suppression | `python3 scripts/run_scenario.py wrong_number --channel voice` |
+| **Legal advice** | UPL redirect | `python3 scripts/run_scenario.py legal_advice --channel voice` |
+| **Spanish** | Language parity | `python3 scripts/run_scenario.py spanish --channel sms` |
+| **All six** | Back-to-back, no Temporal waits | `python3 scripts/run_scenario.py all --channel sms` |
 
----
-
-## 11. API & Entry Points
-
-**Server:** FastAPI on port 8000 (`src/api/webhooks.py`)
-
-| Endpoint | Method | Purpose |
-|----------|--------|---------|
-| `/api/leads` | POST | Create lead, start Temporal workflow |
-| `/api/leads/{id}` | GET | Full intake projection + engagement |
-| `/api/leads/{id}/simulate/inbound` | POST | Inject SMS/email without Twilio |
-| `/api/leads/{id}/simulate/voice` | POST | Simulate voice call + AMD result |
-| `/api/leads/{id}/simulate/esign` | POST | Simulate retainer signed |
-| Vapi custom-LLM route | POST | Live voice turns → brain |
-
-**Worker:** `python -m src.main --mode worker`
-
-**Scenario CLI:** `scripts/run_scenario.py` — demos without Temporal UI
-
-**Clio Grow poll:** `python -m src.integrations.clio_grow --poll`
+**Caller scripts:** `tests/sim/caller_scripts.py`  
+**Voice driver:** `tests/sim/voice_driver.py` — real LLM, simulated PSTN
 
 ---
 
-## 12. Six Caller Scenarios
+## 15. Stubs, Blockers & Workarounds
 
-| Scenario | What it proves | CLI command | Test file |
-|----------|----------------|-------------|-----------|
-| **Responsive** | SMS happy path, slot capture, adaptive SMS plan | `python3 scripts/run_scenario.py responsive --channel sms` | `test_async_scenarios.py` |
-| **Ghosting** | 14-day cadence fallback, voicemail + paired SMS, `[PLAN]` output | `python3 scripts/run_scenario.py ghosting` | `test_workflow_ghosting.py` |
-| **Hostile** | De-escalation, opt-out, escalate_to_human | `python3 scripts/run_scenario.py hostile --channel voice` | `test_voice_scenarios.py` |
-| **Wrong number** | Immediate suppression, no slot collection | `python3 scripts/run_scenario.py wrong_number --channel voice` | `test_voice_scenarios.py` |
-| **Legal advice** | UPL redirect, no merit/case value opinions | `python3 scripts/run_scenario.py legal_advice --channel voice` | `test_voice_scenarios.py` |
-| **Spanish** | Language detection, Spanish responses | `python3 scripts/run_scenario.py spanish --channel voice` | `test_async_scenarios.py` |
+Where I hit walls, I stubbed honestly and documented the production path.
 
-**Caller scripts:** `tests/sim/caller_scripts.py` (design doc §7 utterances)
+| Component                   | Did I stub it?     | What blocked me                            | How I worked around it                                                   |
+| --------------------------- | ------------------ | ------------------------------------------ | ------------------------------------------------------------------------ |
+| **Clio Grow**               | Yes — fixture JSON | Grow API not integrated in timebox         | Same `create_lead` + `clio_grow_stub` trigger; real Grow → webhook later |
+| **Clio Manage**             | No (with token)    | Hardcoded practice_area / custom_field IDs | Map to sandbox IDs in `clio.py`                                          |
+| **Clio OAuth callback**     | Not built          | Used manual token / approval URL           | Paste `CLIO_ACCESS_TOKEN`                                                |
+| **Voice PSTN from India**   | Simulated default  | US Twilio/Vapi numbers                     | `SimulatedVoiceAdapter` + same brain endpoint for all scenarios          |
+| **Vapi AMD webhook**        | Partial            | Production AMD path                        | Mock AMD per lead in sim                                                 |
+| **Email inbound**           | Generic webhook    | Resend inbound not fully wired             | Simulate inbound API                                                     |
+| **Web chat UI**             | By design          | Brief says don't build                     | Ingress via API only                                                     |
+| **Twilio trial SMS**        | N/A                | Error 30044 — message too long             | Shorten SMS, no emoji, upgrade account                                   |
+| **International SMS (+91)** | N/A                | Trial geo + verification                   | Verify number in Twilio; US number easier                                |
+| **DocuSeal API**            | N/A                | Pro license on self-hosted                 | Mock esign or cloud DocuSeal                                             |
 
-**Voice driver:** `tests/sim/voice_driver.py` — multi-turn simulated voice with real LLM, no PSTN
+**Examples of resourcefulness I want to highlight:**
 
----
-
-## 13. Tech Stack & Tools Used
-
-### Runtime & infrastructure
-
-| Tool | Version / notes | Role |
-|------|-----------------|------|
-| Python | 3.11+ | Application language |
-| Temporal | 1.24 | Durable workflow orchestration |
-| Temporal UI | 2.21 | Workflow monitoring (localhost:8081) |
-| PostgreSQL | 16 | Events + lead projection |
-| Docker Compose | — | Postgres, Temporal, app, worker |
-| Alembic | — | DB migrations |
-| FastAPI + Uvicorn | — | HTTP API |
-| SQLAlchemy (async) + asyncpg | — | ORM / DB driver |
-| Pydantic v2 | — | Models + settings |
-
-### AI / LLM
-
-| Tool | Role |
-|------|------|
-| OpenAI-compatible API (`openai` SDK) | Brain + optional strategy signal extraction |
-| Ollama / remote qwen3:8b | Dev LLM (remote endpoint via Tailscale in my setup) |
-| Function calling / tools | Slot capture, escalate, opt-out, retainer |
-| `think: false` for qwen3 | Faster replies on tool-calling turns |
-
-### Channels (integrated, often stubbed)
-
-| Tool | Role |
-|------|------|
-| Vapi | Live voice — custom-LLM URL points to this server |
-| Twilio | SMS adapter ready |
-| Postmark | Email adapter ready |
-| Dropbox Sign | eSign retainer |
-| Clio Manage | Case milestone write-back |
-
-### Dev & quality
-
-| Tool | Role |
-|------|------|
-| pytest + pytest-asyncio | 44+ unit, 8+ integration tests |
-| ruff | Linting |
-| mypy | Type checking (configured) |
-| structlog | Structured logging |
-
-### Development environment
-
-| Tool | Role |
-|------|------|
-| **Cursor IDE** | Primary development environment |
-| **Cursor Agent (AI)** | Architecture, implementation, debugging, strategy layer |
-| Docker | Local Postgres (port 5434) + Temporal |
-| Temporal UI | Workflow progress monitoring |
+- I couldn't call US PSTN reliably from India → I built a simulated voice harness that uses the same brain endpoint as live Vapi
+- I couldn't wait 14 days in a demo → I added `DEMO_FAST_CADENCE` + `run_scenario.py ghosting` loops without Temporal sleep
+- Twilio returned 201 but nothing arrived on my phone → I queried Twilio logs myself, found 30044, and documented the root cause
 
 ---
 
-## 14. Stubs — What & Why
+## 16. How to Run (Demo & Live E2E)
 
-| Component | What was stubbed | Why | Production path |
-|-----------|------------------|-----|-----------------|
-| **Clio Grow** | `fixtures/partial_leads.json` + poll script | No sandbox signup completed | Real Grow API poll → same `create_lead` |
-| **Clio Manage** | Audit log, `{mock: true}` response | No API token | Set `CLIO_ACCESS_TOKEN` |
-| **SMS** | `MockSMSAdapter` — in-memory + audit | No Twilio creds for demo/CI | `USE_MOCK_CHANNELS=false` + Twilio keys |
-| **Email** | `MockEmailAdapter` | No Postmark token | Postmark token in `.env` |
-| **Voice PSTN** | `SimulatedVoiceAdapter` | Developer in India; US number on Vapi only | `VOICE_MODE=vapi` + Vapi keys |
-| **eSign** | `mock-env-{lead_id}` envelopes | No Dropbox Sign key | `DROPBOX_SIGN_API_KEY` |
-| **AMD** | Configurable per lead in mock | Test voicemail path without real calls | Vapi AMD webhook |
-
-**Blocker workaround (voice):** Built `SimulatedVoiceAdapter` + `voice_driver.py` so all six scenarios run with real LLM but zero PSTN — same brain endpoint powers simulated and live voice.
-
----
-
-## 15. How to Run (Demo Script)
+This is how I run and demo the project today.
 
 ### Prerequisites
 
 ```bash
 pip install -e ".[dev]"
 cp .env.example .env
-# Edit .env: DATABASE_URL (port 5434), LLM_BASE_URL, LLM_MODEL
+# Key vars: DATABASE_URL (5434), LLM_PROVIDER, TWILIO_*, RESEND_*, DOCUSEAL_*, CLIO_ACCESS_TOKEN
 ```
 
 ### Infrastructure
 
 ```bash
-docker compose up -d postgres temporal temporal-ui
-# Postgres: localhost:5434
-# Temporal UI: http://localhost:8081
+docker compose up -d postgres temporal temporal-ui docuseal docuseal-postgres
+python3 -m src.main --mode worker   # terminal 1
+python3 -m src.main --mode server   # terminal 2
 ```
 
-### Full stack
+### Fast scenario demo (no real channels, ~10 min)
 
 ```bash
-# Terminal 1
-python -m src.main --mode worker
-
-# Terminal 2
-python -m src.main --mode server
+python3 scripts/run_scenario.py all --channel sms
 ```
 
-### Scenario demos (no Temporal required)
+### Live E2E (real SMS) — my checklist
 
-```bash
-python3 scripts/run_scenario.py responsive --channel sms
-python3 scripts/run_scenario.py ghosting
-python3 scripts/run_scenario.py hostile --channel voice
-python3 scripts/run_scenario.py legal_advice --channel voice
-python3 scripts/run_scenario.py wrong_number --channel voice
-python3 scripts/run_scenario.py spanish --channel voice
-```
+1. I set `USE_MOCK_CHANNELS=false`, `LLM_PROVIDER=anthropic`
+2. I run `ngrok http 8000` → set `PUBLIC_BASE_URL`
+3. In Twilio → my phone number → webhook `https://<ngrok>/webhooks/sms`
+4. I verify the recipient number in Twilio (trial)
+5. I `POST /api/leads` with **my personal phone** in `identity.phone` (not the Twilio number)
+6. I use `DEMO_FAST_CADENCE=true` for 10s gaps
+7. I reply to SMS from my phone → my workflow wakes via webhook
 
-### API demo
+### How I monitor a run
 
-```bash
-# Create lead (starts workflow)
-curl -X POST http://localhost:8000/api/leads \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "identity": {"name": "David", "phone": ["+14805551234"], "email": ["david@example.com"]},
-    "consent": {"origin": "inbound", "channels_allowed": ["voice","sms","email"], "ai_voice_consent": true}
-  }'
-
-# Check progress
-curl http://localhost:8000/api/leads/{lead_id}
-
-# Simulate SMS reply (without Twilio)
-curl -X POST http://localhost:8000/api/leads/{lead_id}/simulate/inbound \
-  -H 'Content-Type: application/json' \
-  -d '{"channel": "sms", "message": "Hi sorry I missed your call, yes I was in an accident"}'
-```
-
-### Monitor workflow
-
-- **Temporal UI:** http://localhost:8081 → workflow `chase-{lead_id}`
-- **Lead state:** `GET /api/leads/{lead_id}` → disposition, engagement.responsiveness, last_plan
+- Temporal UI: http://localhost:8081 → `chase-{lead_id}`
+- Lead state: `GET /api/leads/{lead_id}`
+- Twilio logs: delivery status / error codes
 
 ---
 
-## 16. Testing
+## 17. Testing
+
+These are the tests I rely on before I demo:
 
 ```bash
-# Unit tests (no LLM, fast)
 pytest tests/test_strategy.py tests/test_scenarios.py tests/test_projection.py -v
-
-# Integration (uses DB)
 pytest tests/integration/ -v
-
-# LLM integration (requires LLM endpoint)
-pytest tests/integration/ -m llm -v
+pytest tests/integration/ -m llm -v   # requires LLM
 ```
 
-### Key test coverage
-
-| Test file | Proves |
-|-----------|--------|
-| `test_strategy.py` | SMS-hot → no voice, hostile de-escalation, ingress plans |
-| `test_strategy_adaptive.py` | DB-persisted signals, inbound → SMS plan |
-| `test_workflow_ghosting.py` | Voicemail + paired SMS via plan fallback |
-| `test_scenarios.py` | UPL, compliance gates, disposition transitions |
-| `test_voice_scenarios.py` | Voice + LLM scenarios (@pytest.mark.llm) |
-| `test_async_scenarios.py` | SMS + Spanish (@pytest.mark.llm) |
+| Test file                   | What I use it to prove                             |
+| --------------------------- | -------------------------------------------------- |
+| `test_strategy.py`          | SMS-hot → no voice, ingress plans, demo-fast waits |
+| `test_strategy_adaptive.py` | DB-persisted signals                               |
+| `test_workflow_ghosting.py` | Voicemail + paired SMS                             |
+| `test_voice_scenarios.py`   | Voice + LLM (@llm)                                 |
+| `test_async_scenarios.py`   | SMS + Spanish (@llm)                               |
 
 ---
 
-## 17. How I Worked With AI
+## 18. Where the Loop Breaks (My Honest Gaps)
 
-**Tool:** Cursor IDE with Agent mode (AI coding assistant).
+### Where I still fall short of "best human intake specialist"
 
-### Division of work
+1. **My strategy is rules + keywords** — not deep subtext ("sounds hesitant but interested")
+2. **Conversation memory is thin** across channels in my projection
+3. **I have no eval harness yet** — I can't score "feels human" at scale
+4. **I extract `contact_window` but don't enforce it** in scheduling
+5. **I don't use email-opened signal** in my planner yet
+6. **Clio Grow is not live for me** — fixture only
+7. **SMS trial delivery** — I still need segment-aware truncation / no emoji for production Twilio
+8. **My voice CLI bypasses Temporal** in the scenario script (activities called directly)
 
-| I decided / verified | AI implemented / drafted |
-|----------------------|---------------------------|
-| Problem framing ("human specialist, not script") | Temporal workflow boilerplate |
-| Architecture split (orchestrator / strategy / brain / channels) | CQRS projection, API routes |
-| Identified strategy gap (fixed cadence vs adaptive plan) | Strategy layer per spec |
-| Which scenarios to demo | Test scaffolding, README |
-| LLM output quality on hostile/UPL scenarios | Debugging infra issues |
-| Honest gap analysis for submission | Initial cadence-first approach (corrected) |
+### Where I'm confident the adaptive loop works
 
-### Where AI was wrong — and how I corrected it
-
-| Issue | AI mistake | My correction |
-|-------|------------|---------------|
-| Adaptiveness | Built fixed 9-step cadence as primary driver | Added strategy layer: observe → plan → act |
-| Data types | Assigned `"neutral"` string to `Sentiment` enum field | Coerce to enum on assignment |
-| Postgres | Default port 5432 conflicted with Homebrew Postgres | Docker mapped to host port 5434 |
-| Temporal | Workflow sandbox blocked pathlib in activities | `UnsandboxedWorkflowRunner` + lazy imports |
-| Datetime | Naive vs aware datetime in compliance gates | Normalize timezone in gate check |
-| LLM latency | No progress indication; looked "stuck" | Added turn logging, `think: false`, 180s timeout |
-
-### What I verified manually
-
-- Hostile and legal-advice voice outputs (not just unit tests)
-- SMS adaptive plan after inbound (integration test + CLI)
-- Ghosting still produces voicemails via cadence fallback (not SMS-hot shortcut)
-- Remote qwen3 ~60s/turn latency acceptable for demo
-
-### Trace
-
-Development conducted in Cursor Agent sessions. Link your Cursor chat export or agent transcript in submission if required.
+- SMS reply → I stop calling, prefer SMS (I verified in tests + live)
+- Hostile → my empathy path before opt-out
+- Ghosting → my cadence fallback with voicemail + paired SMS
+- Ingress matrix → different first touch without code forks
+- Inbound signal **interrupts** my Temporal timer (real webhook or simulate)
 
 ---
 
-## 18. Gaps & Two-Week Roadmap
+## 20. Two-Week Roadmap
 
-### Where it still falls short of "best human intake specialist"
+If I had two more weeks, this is what I would build next:
 
-1. **Strategy is rules + keywords** — not deep subtext ("sounds hesitant but interested")
-2. **Conversation memory thin** — voice turns may not fully carry across channels
-3. **No eval harness** — can't score "feels human" at scale
-4. **Voice CLI bypasses Temporal** — activities called directly in scenario script
-5. **`contact_window` extracted but not enforced** in quiet-hours scheduling
-6. **Email-opened signal unused** in planner
-7. **Clio sandbox not integrated** — fixture only
-
-### Next two weeks
-
-| Priority | Work |
-|----------|------|
-| 1 | Persona eval harness — 20 synthetic leads, expected plan assertions |
-| 2 | Temporal E2E for all six scenarios with time-skip |
-| 3 | Clio sandbox — real Grow ingest + Manage write-back |
-| 4 | Contact window enforcement — "call after 5pm" actually deferred |
-| 5 | One live channel proof — Twilio SMS or Vapi voice |
-| 6 | LLM planner for ambiguous multi-signal cases (with audit log) |
+| Priority | What I would do                                                         |
+| -------- | ----------------------------------------------------------------------- |
+| 1        | **Clio Grow live ingest** — webhook or API → `POST /api/leads`          |
+| 2        | **Persona eval harness** — 20 synthetic leads, expected plan assertions |
+| 3        | **Contact window enforcement** — "call after 5pm" actually deferred     |
+| ...      | ...                                                                     |
 
 ---
-
-## 19. Repository Map
-
-```
-outbound-chase/
-├── PRESENTATION.md              ← this document
-├── README.md                    ← runbook
-├── pyproject.toml               ← dependencies
-├── docker-compose.yml           ← postgres, temporal, app, worker
-├── Dockerfile
-├── alembic/                     ← DB migrations
-├── fixtures/
-│   └── partial_leads.json       ← Clio Grow stub
-├── scripts/
-│   └── run_scenario.py          ← demo CLI
-├── src/
-│   ├── main.py                  ← server | worker entry
-│   ├── config.py                ← settings
-│   ├── worker.py                ← Temporal worker
-│   ├── api/
-│   │   ├── webhooks.py          ← FastAPI app
-│   │   ├── leads.py             ← lead CRUD + simulate
-│   │   └── vapi_llm.py          ← Vapi custom-LLM
-│   ├── brain/
-│   │   ├── agent.py             ← ConversationBrain
-│   │   └── upl_filter.py        ← UPL regex backstop
-│   ├── channels/
-│   │   ├── base.py              ← adapter interface
-│   │   ├── mock.py              ← mock SMS/email/voice
-│   │   ├── voice_simulated.py   ← sim voice driver
-│   │   ├── voice.py             ← Vapi adapter
-│   │   ├── sms.py               ← Twilio
-│   │   └── email.py             ← Postmark
-│   ├── orchestrator/
-│   │   ├── workflow.py          ← Temporal workflow
-│   │   ├── activities.py        ← Temporal activities
-│   │   ├── strategy.py          ← adaptive planner
-│   │   ├── signal_extractor.py  ← hybrid signal extraction
-│   │   └── cadence.py           ← fallback cadence table
-│   ├── store/
-│   │   └── projection.py        ← CQRS event log + projection
-│   ├── integrations/
-│   │   ├── clio_grow.py         ← Grow stub
-│   │   ├── clio.py              ← Manage write-back
-│   │   └── dbox_sign.py         ← eSign
-│   ├── models/
-│   │   ├── intake.py            ← IntakeRecord, EngagementState
-│   │   ├── enums.py             ← Disposition, Channel, MessageGoal
-│   │   └── events.py            ← Event model
-│   └── db/
-│       └── models.py            ← SQLAlchemy tables
-└── tests/
-    ├── test_strategy.py
-    ├── test_scenarios.py
-    ├── test_projection.py
-    ├── integration/
-    │   ├── test_strategy_adaptive.py
-    │   ├── test_workflow_ghosting.py
-    │   ├── test_async_scenarios.py
-    │   └── test_voice_scenarios.py
-    └── sim/
-        ├── caller_scripts.py    ← scenario utterances
-        └── voice_driver.py      ← simulated voice harness
-```
-
----
-
-## 20. One-Slide Pitch
-
-> **Outbound-Chase** is a durable, channel-agnostic intake chase engine for PI law firms. Temporal handles the 14-day chase; a **strategy layer** reads engagement signals and adapts channel, timing, and message goals; an LLM brain handles conversation with UPL guardrails. Six caller scenarios run today via CLI and automated tests. Integrations are stubbed where sandbox access wasn't available (Clio, PSTN from India), with clear production paths wired in. The design prioritizes **auditability and adaptiveness over a fixed script** — and documents honestly where human-level judgment still lives on the roadmap.
-
----
-
-*End of presentation document.*

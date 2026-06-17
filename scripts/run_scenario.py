@@ -126,19 +126,34 @@ async def run_ghosting() -> None:
         print(f"[STATE] disposition={final.disposition.value}")
 
 
+async def run_all_scenarios(channel: str = "sms") -> None:
+    """Run every design §7 scenario back-to-back (no Temporal timers)."""
+    scenarios = ["responsive", "legal_advice", "hostile", "wrong_number", "spanish", "ghosting"]
+    for name in scenarios:
+        if name == "ghosting":
+            await run_ghosting()
+        elif channel == "sms":
+            await run_sms_scenario(name)
+        else:
+            await run_voice_scenario(name)
+        print("=" * 60 + "\n")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Run Outbound-Chase scenarios")
     parser.add_argument(
         "scenario",
-        choices=["legal_advice", "hostile", "responsive", "ghosting", "wrong_number", "spanish"],
+        choices=["legal_advice", "hostile", "responsive", "ghosting", "wrong_number", "spanish", "all"],
     )
     parser.add_argument("--channel", choices=["voice", "sms"], default="voice")
     args = parser.parse_args()
 
-    if args.scenario == "ghosting" or args.channel == "sms":
+    if args.scenario == "ghosting" or args.channel == "sms" or args.scenario == "all":
         await init_db()
 
-    if args.scenario == "ghosting":
+    if args.scenario == "all":
+        await run_all_scenarios(channel=args.channel)
+    elif args.scenario == "ghosting":
         await run_ghosting()
     elif args.channel == "sms":
         await run_sms_scenario(args.scenario)

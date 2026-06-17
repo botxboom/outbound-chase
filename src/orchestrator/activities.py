@@ -109,12 +109,9 @@ async def check_compliance_gates(intake_record: dict, channel: str) -> dict:
 
     created_at = intake_record.get("created_at")
     if created_at:
-        if isinstance(created_at, str):
-            created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        days_elapsed = (datetime.now(timezone.utc) - created_at).days
-        if days_elapsed >= _settings().chase_timeout_days:
+        from src.orchestrator.strategy import chase_timed_out
+
+        if chase_timed_out(intake_record):
             return {
                 "allowed": False,
                 "terminal": True,
@@ -316,7 +313,7 @@ async def schedule_callback(lead_id: str, callback_time: str) -> None:
 
 @activity.defn
 async def send_retainer(lead_id: str, language: str, channel: str) -> dict:
-    from src.integrations.dbox_sign import send_retainer_for_signing
+    from src.integrations.docuseal import send_retainer_for_signing
 
     record = await _store().load_lead_record(lead_id)
     identity = record.identity if record else {}
