@@ -8,9 +8,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any
 
-import httpx
-from openai import AsyncOpenAI
-
+from src.brain.llm import chat_completion
 from src.brain.upl_filter import filter_upl_violations
 
 from src.config import settings
@@ -236,22 +234,6 @@ TOOLS = [
 class ConversationBrain:
     """The conversation agent — stateless, channel-blind, goal-directed."""
 
-    def __init__(self) -> None:
-        self.client = AsyncOpenAI(
-            base_url=settings.llm_base_url,
-            api_key=settings.llm_api_key,
-            timeout=httpx.Timeout(settings.llm_timeout_seconds, connect=10.0),
-        )
-        self.model = settings.llm_model
-
-    def _ollama_extra(self) -> dict:
-        """Ollama-specific options (disable qwen3 'thinking' for speed)."""
-        if not settings.llm_disable_think:
-            return {}
-        if "qwen3" in self.model.lower():
-            return {"think": False}
-        return {}
-
     async def run_turn(
         self,
         intake_record: dict,
@@ -315,15 +297,11 @@ class ConversationBrain:
             messages.append({"role": "system", "content": "Respond entirely in Spanish."})
 
         # Call LLM
-        extra = self._ollama_extra()
-        response = await self.client.chat.completions.create(
-            model=self.model,
+        llm_response = await chat_completion(
             messages=messages,
             tools=TOOLS,
-            tool_choice="auto",
             max_tokens=settings.llm_max_tokens,
             temperature=settings.llm_temperature,
-            **({"extra_body": extra} if extra else {}),
         )
 
         # Process response
@@ -335,20 +313,17 @@ class ConversationBrain:
             "disposition": None,
         }
 
-        choice = response.choices[0]
-        message = choice.message
-
         # Extract text content
-        if message.content:
-            filtered = filter_upl_violations(message.content)
+        if llm_response.content:
+            filtered = filter_upl_violations(llm_response.content)
             result["content"] = {
                 "text": filtered,
                 "type": "voice" if channel == "voice" else "text",
             }
 
         # Process tool calls
-        if message.tool_calls:
-            for tool_call in message.tool_calls:
+        if llm_response.tool_calls:
+            for tool_call in llm_response.tool_calls:
                 tool_result = self._process_tool_call(tool_call, intake_record)
                 if tool_result:
                     if tool_result.get("type") == "slot":

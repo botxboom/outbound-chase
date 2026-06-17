@@ -79,5 +79,33 @@ services:
       temporal:
         condition: service_started
 
+  docuseal-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: docuseal
+    volumes:
+      - docuseal_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d docuseal"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  docuseal:
+    image: docuseal/docuseal:latest
+    ports:
+      - "3000:3000"
+    volumes:
+      - docuseal_data:/data/docuseal
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@docuseal-postgres:5432/docuseal
+    depends_on:
+      docuseal-postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:
+  docuseal_pg_data:
+  docuseal_data:

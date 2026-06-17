@@ -17,7 +17,7 @@ def _use_mock(channel: str) -> bool:
         return True
     if channel == "sms" and not settings.twilio_account_sid:
         return True
-    if channel == "email" and not settings.postmark_server_token:
+    if channel == "email" and not settings.resend_api_key:
         return True
     if channel == "voice" and not settings.vapi_api_key:
         return True

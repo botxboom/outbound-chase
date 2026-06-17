@@ -99,7 +99,7 @@ class TouchPlan:
         return {
             "channel": self.channel.value,
             "message_goal": self.message_goal.value,
-            "wait_seconds": self.wait_seconds,
+            "wait_seconds": _effective_wait(self.wait_seconds),
             "reason": self.reason,
             "terminal_action": self.terminal_action,
             "constraints": self.constraints,
@@ -178,6 +178,26 @@ def _days_elapsed(record: IntakeRecord) -> int:
     if created.tzinfo is None:
         created = created.replace(tzinfo=timezone.utc)
     return (datetime.now(timezone.utc) - created).days
+
+
+def chase_timed_out(record: IntakeRecord | dict[str, Any]) -> bool:
+    """True when chase duration exceeded (days in prod, minutes in demo-fast mode)."""
+    if isinstance(record, dict):
+        record = IntakeRecord.model_validate(record)
+    created = record.created_at
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
+    elapsed = datetime.now(timezone.utc) - created
+    if settings.demo_fast_cadence:
+        return elapsed.total_seconds() >= settings.demo_chase_timeout_minutes * 60
+    return elapsed.days >= settings.chase_timeout_days
+
+
+def _effective_wait(wait_seconds: int) -> int:
+    """Compress inter-touch waits for demo/testing."""
+    if not settings.demo_fast_cadence or wait_seconds <= 0:
+        return wait_seconds
+    return min(wait_seconds, settings.demo_wait_seconds_cap)
 
 
 def _touch_type_to_goal(touch_type: str) -> MessageGoal:
@@ -361,7 +381,7 @@ def plan_next_touch(
         return plan_initial_touch(record, trigger)
 
     # Terminal: chase timeout
-    if _days_elapsed(record) >= settings.chase_timeout_days:
+    if chase_timed_out(record):
         return TouchPlan(
             channel=Channel.SMS,
             message_goal=MessageGoal.GIVE_UP,

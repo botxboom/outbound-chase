@@ -11,10 +11,9 @@ from src.config import settings
 
 app = FastAPI(title="Outbound-Chase Webhooks", version="0.1.0")
 
-from .vapi_llm import app_vapi
+from .vapi_llm import chat_completions
 
-app.mount("/", app_vapi)
-
+app.post("/v1/chat/completions")(chat_completions)
 app.include_router(leads_router)
 
 _temporal_client = None
@@ -114,22 +113,41 @@ async def email_webhook(request: Request) -> JSONResponse:
 
 @app.post("/webhooks/esign")
 async def esign_webhook(request: Request) -> JSONResponse:
+    """DocuSeal submission webhook (submission.completed)."""
     data = await request.json()
-    event_type = data.get("event", {}).get("event_type", "")
-    metadata = data.get("signature_request", {}).get("metadata", {})
-    lead_id = metadata.get("lead_id")
+    event_type = data.get("event_type", "")
+    payload = data.get("data") or {}
 
-    if lead_id and event_type == "signature_request_signed":
-        await _signal_workflow(
-            lead_id,
-            "inbound_event",
-            {
-                "channel": "esign",
-                "event_type": "retainer_signed",
-                "envelope_id": data.get("signature_request", {}).get("signature_request_id"),
-                "signed_pdf_ref": data.get("signature_request", {}).get("signed_pdf_url"),
-            },
-        )
+    if event_type != "submission.completed":
+        return JSONResponse({"received": True, "ignored": event_type})
+
+    lead_id = None
+    submitters = payload.get("submitters") or []
+    for submitter in submitters:
+        lead_id = submitter.get("external_id") or (submitter.get("metadata") or {}).get("lead_id")
+        if lead_id:
+            break
+    if not lead_id:
+        meta = payload.get("metadata") or {}
+        lead_id = meta.get("lead_id")
+
+    if not lead_id:
+        return JSONResponse({"received": True, "error": "no lead_id in webhook"})
+
+    documents = payload.get("documents") or []
+    signed_pdf_ref = documents[0].get("url") if documents else payload.get("combined_document_url")
+    envelope_id = str(payload.get("id", ""))
+
+    await _signal_workflow(
+        lead_id,
+        "inbound_event",
+        {
+            "channel": "esign",
+            "event_type": "retainer_signed",
+            "envelope_id": envelope_id,
+            "signed_pdf_ref": signed_pdf_ref,
+        },
+    )
 
     return JSONResponse({"received": True})
 
